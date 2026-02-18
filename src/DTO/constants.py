@@ -1,8 +1,0 @@
-# Prompt versions and configurations
-JUDGING_PROMPT_VERSIONS = {
-    "JUDGING_PROMPT_VERSION": "4"
-}
-
-GENERATIVE_PROMPT_VERSIONS = {
-    "GENERATION_PROMPT_VERSION": "2"
-}
