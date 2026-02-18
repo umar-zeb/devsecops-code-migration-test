@@ -1,18 +1,25 @@
 #!/bin/bash
 
-# Usage: validate.sh <original_repo_url> <client_repo_url> <branch> <original_commit>
+# Usage: validate.sh <original_repo_url> <client_repo_url> <branch>
 
 set -euo pipefail
 
-if [ $# -lt 4 ]; then
-  echo "Usage: $0 <original_repo_url> <client_repo_url> <branch> <original_commit>"
+if [ $# -lt 3 ]; then
+  echo "Usage: $0 <original_repo_url> <client_repo_url> <branch>"
   exit 1
 fi
 
 ORIGINAL_REPO=$1
 CLIENT_REPO=$2
 BRANCH=$3
-ORIGINAL_COMMIT=$4
+
+# Get the original commit SHA from environment (set by GitHub Actions)
+if [ -z "${GITHUB_SHA:-}" ]; then
+  echo "ERROR: GITHUB_SHA environment variable is not set."
+  exit 1
+fi
+
+ORIGINAL_COMMIT=$GITHUB_SHA
 CLIENT_USERNAME="${CLIENT_USERNAME:-superdesk_support@superdesk.solutions}"
 
 # Paths to exclude from patch comparison (code-only validation)
@@ -74,39 +81,29 @@ fi
 
 echo "==> Target patch-id: $ORIGINAL_PATCH_ID"
 
-# ── Clone client repo and search recent commits for a matching patch-id ────────
+# ── Clone client repo and get latest commit ───────────────────────────────────
 echo "==> Cloning client repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$CLIENT_REPO" "$WORKDIR/client"
+git clone --quiet --no-tags --branch main "$CLIENT_REPO" "$WORKDIR/client"
 
-# Deepen the clone to cover enough history (increase if needed)
-git -C "$WORKDIR/client" fetch --quiet --depth=100 origin "$BRANCH"
-
-MATCH_FOUND=false
-MATCH_COMMIT=""
-
-echo "==> Scanning last 100 commits in client repo..."
-while IFS= read -r commit; do
-  CLIENT_PATCH_ID=$(get_patch_id "$WORKDIR/client" "$commit")
-  if [ "$CLIENT_PATCH_ID" = "$ORIGINAL_PATCH_ID" ]; then
-    MATCH_FOUND=true
-    MATCH_COMMIT="$commit"
-    break
-  fi
-done < <(git -C "$WORKDIR/client" rev-list --max-count=100 "origin/$BRANCH")
+# Get the latest commit ID
+CLIENT_COMMIT=$(git -C "$WORKDIR/client" rev-parse HEAD)
+CLIENT_PATCH_ID=$(get_patch_id "$WORKDIR/client" "$CLIENT_COMMIT")
 
 # ── Report ─────────────────────────────────────────────────────────────────────
-if $MATCH_FOUND; then
+if [ "$CLIENT_PATCH_ID" = "$ORIGINAL_PATCH_ID" ]; then
   echo ""
   echo "✅ Validation PASSED."
   echo "   Original commit : $ORIGINAL_COMMIT"
-  echo "   Matched commit  : $MATCH_COMMIT"
+  echo "   Client commit   : $CLIENT_COMMIT"
   echo "   Patch-id        : $ORIGINAL_PATCH_ID"
   exit 0
 else
   echo ""
   echo "❌ Validation FAILED — change not found in client repo."
   echo "   Original commit : $ORIGINAL_COMMIT"
-  echo "   Patch-id        : $ORIGINAL_PATCH_ID"
+  echo "   Client commit   : $CLIENT_COMMIT"
+  echo "   Original patch-id: $ORIGINAL_PATCH_ID"
+  echo "   Client patch-id  : $CLIENT_PATCH_ID"
   echo ""
   echo "==> Diff of the missing change (code only, configs excluded):"
   git -C "$WORKDIR/original" diff-tree -p --stat "$ORIGINAL_COMMIT" -- . "${EXCLUDE_PATHS[@]}"

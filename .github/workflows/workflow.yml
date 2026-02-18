@@ -25,7 +25,7 @@ jobs:
           CLIENT_REPO: 'https://gitlab.com/superdesk-saas/devsecops-target-repo'
           CLIENT_PAT: ${{ secrets.CLIENT_PAT }}
           BRANCH: 'main'
-        run: bash validate.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT"
+        run: bash validate.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH"
 
   sync:
     runs-on: ubuntu-latest
