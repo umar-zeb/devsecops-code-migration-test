@@ -1,7 +1,7 @@
 name: Sync to Client Repo
 
 on:
-  pull_request:
+  push:
     branches:
       - main
     types: [opened, synchronize]
