@@ -11,8 +11,18 @@ ORIGINAL_REPO=$1
 CLIENT_REPO=$2
 BRANCH=$3
 ORIGINAL_COMMIT=$4
+CLIENT_USERNAME="superdesk_support@superdesk.solutions"
 
 EXCLUDE_PATHS=":!.github/ :!CODEOWNERS :!.gitattributes"  # Add more excludes as needed
+
+# Set up global credential helper (use 'store' for persistent; 'cache' for temp with --timeout=3600)
+git config --global credential.helper store
+
+# Provide credentials once (username/email and PAT/password); Git will store them in ~/.git-credentials
+# Format: https://username:password@host
+# For GitLab PAT: username can be 'oauth2' or your email, password is PAT
+echo "https://${CLIENT_USERNAME}:${CLIENT_PAT}@${CLIENT_REPO#https://}" > ~/.git-credentials  # CLIENT_USERNAME from env (e.g., your email or 'oauth2')
+
 
 # Clone original shallow for the commit
 git clone --depth=1 --branch $BRANCH $ORIGINAL_REPO original-temp
