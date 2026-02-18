@@ -1,0 +1,65 @@
+name: Sync to Client Repo
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+
+      - name: Run Validation Script
+        env:
+          ORIGINAL_COMMIT: ${{ github.event.pull_request.head.sha }}
+          CLIENT_REPO: ${{ secrets.CLIENT_REPO_URL }}
+          BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: bash validate.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT"
+
+  sync:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-key C99B11D28041DD01
+          sudo apt-add-repository "deb [arch=amd64] https://cli.github.com/packages stable main"
+          sudo apt update
+          sudo apt install gh
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.CLIENT_PAT }}" | gh auth login --with-token
+
+      - name: Run Push Script
+        env:
+          CLIENT_PAT: ${{ secrets.CLIENT_PAT }}
+          CLIENT_REPO: ${{ secrets.CLIENT_REPO_URL }}
+          BRANCH: ${{ github.event.pull_request.base.ref }}
+          ORIGINAL_COMMIT: ${{ github.event.pull_request.head.sha }}
+          NEW_BRANCH: "update-from-pr-${{ github.event.pull_request.number }}"
+        run: bash push.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT" "$NEW_BRANCH"
