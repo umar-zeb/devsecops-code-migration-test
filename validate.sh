@@ -2,6 +2,8 @@
 
 # Usage: validate.sh <original_repo_url> <client_repo_url> <branch> <original_commit>
 
+set -euo pipefail
+
 if [ $# -lt 4 ]; then
   echo "Usage: $0 <original_repo_url> <client_repo_url> <branch> <original_commit>"
   exit 1
@@ -11,56 +13,102 @@ ORIGINAL_REPO=$1
 CLIENT_REPO=$2
 BRANCH=$3
 ORIGINAL_COMMIT=$4
-CLIENT_USERNAME="superdesk_support@superdesk.solutions"
+CLIENT_USERNAME="${CLIENT_USERNAME:-superdesk_support@superdesk.solutions}"
 
-EXCLUDE_PATHS=":!.github/ :!CODEOWNERS :!.gitattributes"  # Add more excludes as needed
+# Paths to exclude from patch comparison (code-only validation)
+EXCLUDE_PATHS=(
+  ":(exclude).github/"
+  ":(exclude)CODEOWNERS"
+  ":(exclude).gitattributes"
+  ":(exclude).gitignore"
+  ":(exclude)validate.sh"
+  ":(exclude)push.sh"
+)
 
-# Set up global credential helper (use 'store' for persistent; 'cache' for temp with --timeout=3600)
+# ── Credentials ────────────────────────────────────────────────────────────────
+if [ -z "${CLIENT_PAT:-}" ]; then
+  echo "ERROR: CLIENT_PAT environment variable is not set."
+  exit 1
+fi
+
 git config --global credential.helper store
 
-# Provide credentials once (username/email and PAT/password); Git will store them in ~/.git-credentials
-# Format: https://username:password@host
-# For GitLab PAT: username can be 'oauth2' or your email, password is PAT
-echo "https://${CLIENT_USERNAME}:${CLIENT_PAT}@${CLIENT_REPO#https://}" > ~/.git-credentials  # CLIENT_USERNAME from env (e.g., your email or 'oauth2')
+# Extract host from CLIENT_REPO URL (e.g., https://gitlab.com/org/repo → gitlab.com)
+CLIENT_HOST=$(echo "$CLIENT_REPO" | awk -F/ '{print $3}')
+echo "https://${CLIENT_USERNAME}:${CLIENT_PAT}@${CLIENT_HOST}" > ~/.git-credentials
+chmod 600 ~/.git-credentials
 
+# ── Helper: compute a stable diff-only hash for a commit ──────────────────────
+# git patch-id --stable strips commit metadata so cherry-picks match.
+# We pipe through `git diff-tree` instead of `git show` to get a clean patch.
+get_patch_id() {
+  local repo_dir=$1
+  local commit=$2
 
-# Clone original shallow for the commit
-git clone --depth=1 --branch $BRANCH $ORIGINAL_REPO original-temp
-cd original-temp
-git fetch origin $ORIGINAL_COMMIT
-ORIGINAL_PATCH_ID=$(git show $ORIGINAL_COMMIT -- . $EXCLUDE_PATHS | git patch-id | awk '{print $1}')
-cd ..
-rm -rf original-temp
+  # diff-tree -p produces a pure diff without commit message headers,
+  # which is exactly what git patch-id expects.
+  git -C "$repo_dir" diff-tree -p "$commit" -- . "${EXCLUDE_PATHS[@]}" \
+    | git patch-id --stable \
+    | awk '{print $1}'
+}
 
-# Clone client shallow
-git clone --depth=100 --branch $BRANCH $CLIENT_REPO client-temp
-cd client-temp
-git fetch origin --depth=100
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
+
+# ── Clone original repo and get the patch-id of the target commit ─────────────
+echo "==> Cloning original repo..."
+git clone --quiet --no-tags --branch "$BRANCH" "$ORIGINAL_REPO" "$WORKDIR/original"
+
+# Fetch the specific commit (works even if it's not the branch tip)
+git -C "$WORKDIR/original" fetch --quiet --depth=1 origin "$ORIGINAL_COMMIT"
+git -C "$WORKDIR/original" checkout --quiet FETCH_HEAD
+
+ORIGINAL_PATCH_ID=$(get_patch_id "$WORKDIR/original" "$ORIGINAL_COMMIT")
+
+if [ -z "$ORIGINAL_PATCH_ID" ]; then
+  echo "ERROR: Could not compute patch-id for commit $ORIGINAL_COMMIT."
+  echo "The commit may be empty after applying path exclusions."
+  exit 1
+fi
+
+echo "==> Target patch-id: $ORIGINAL_PATCH_ID"
+
+# ── Clone client repo and search recent commits for a matching patch-id ────────
+echo "==> Cloning client repo..."
+git clone --quiet --no-tags --branch "$BRANCH" "$CLIENT_REPO" "$WORKDIR/client"
+
+# Deepen the clone to cover enough history (increase if needed)
+git -C "$WORKDIR/client" fetch --quiet --depth=100 origin "$BRANCH"
 
 MATCH_FOUND=false
-for commit in $(git rev-list --max-count=100 $BRANCH); do
-  CLIENT_PATCH_ID=$(git show $commit -- . $EXCLUDE_PATHS | git patch-id | awk '{print $1}')
+MATCH_COMMIT=""
+
+echo "==> Scanning last 100 commits in client repo..."
+while IFS= read -r commit; do
+  CLIENT_PATCH_ID=$(get_patch_id "$WORKDIR/client" "$commit")
   if [ "$CLIENT_PATCH_ID" = "$ORIGINAL_PATCH_ID" ]; then
     MATCH_FOUND=true
+    MATCH_COMMIT="$commit"
     break
   fi
-done
+done < <(git -C "$WORKDIR/client" rev-list --max-count=100 "origin/$BRANCH")
 
-cd ..
-rm -rf client-temp
-
+# ── Report ─────────────────────────────────────────────────────────────────────
 if $MATCH_FOUND; then
-  echo "Validation passed. Code change from original commit $ORIGINAL_COMMIT already applied in client's repo (matching filtered patch-id: $ORIGINAL_PATCH_ID)."
+  echo ""
+  echo "✅ Validation PASSED."
+  echo "   Original commit : $ORIGINAL_COMMIT"
+  echo "   Matched commit  : $MATCH_COMMIT"
+  echo "   Patch-id        : $ORIGINAL_PATCH_ID"
   exit 0
 else
-  # Explain the changes (show the filtered diff of the missing change)
-  git clone --depth=1 --branch $BRANCH $ORIGINAL_REPO original-temp
-  cd original-temp
-  git fetch origin $ORIGINAL_COMMIT
-  echo "Validation failed. The target does not match the source (code change not found in client)."
-  echo "Here are the changes in the code (filtered to ignore configs):"
-  git show $ORIGINAL_COMMIT -- . $EXCLUDE_PATHS
-  cd ..
-  rm -rf original-temp
+  echo ""
+  echo "❌ Validation FAILED — change not found in client repo."
+  echo "   Original commit : $ORIGINAL_COMMIT"
+  echo "   Patch-id        : $ORIGINAL_PATCH_ID"
+  echo ""
+  echo "==> Diff of the missing change (code only, configs excluded):"
+  git -C "$WORKDIR/original" diff-tree -p --stat "$ORIGINAL_COMMIT" -- . "${EXCLUDE_PATHS[@]}"
   exit 1
 fi
