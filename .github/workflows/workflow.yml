@@ -22,9 +22,9 @@ jobs:
       - name: Run Validation Script
         env:
           ORIGINAL_COMMIT: ${{ github.event.pull_request.head.sha }}
-          CLIENT_REPO: https://gitlab.com/superdesk-saas/devsecops-target-repo
+          CLIENT_REPO: 'https://gitlab.com/superdesk-saas/devsecops-target-repo'
           CLIENT_PAT: ${{ secrets.CLIENT_PAT }}
-          BRANCH: ${{ github.event.pull_request.base.ref }}
+          BRANCH: 'main'
         run: bash validate.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT"
 
   sync:
@@ -47,10 +47,10 @@ jobs:
 
       - name: Run Push Script
         env:
-          CLIENT_USERNAME: superdesk_support@superdesk.solutions  # e.g., 'oauth2' or your email/username
+          CLIENT_USERNAME: 'superdesk_support@superdesk.solutions'  # e.g., 'oauth2' or your email/username
           CLIENT_PAT: ${{ secrets.CLIENT_PAT }}
-          CLIENT_REPO: https://gitlab.com/superdesk-saas/devsecops-target-repo
-          BRANCH: ${{ github.ref_name }}
+          CLIENT_REPO: 'https://gitlab.com/superdesk-saas/devsecops-target-repo'
+          BRANCH: 'main'
           ORIGINAL_COMMIT: ${{ github.sha }}
           NEW_BRANCH: "update-from-push-${{ github.sha }}"
         run: bash push.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT" "$NEW_BRANCH"
