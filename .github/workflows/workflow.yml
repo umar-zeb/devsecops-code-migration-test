@@ -12,6 +12,7 @@ on:
 
 jobs:
   validate:
+    # Only run on pull requests (not after merge)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +35,8 @@ jobs:
         run: bash validate.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH"
 
   sync:
-    if: github.event_name == 'push'
+    # Only run after PR is merged to main (push event)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -59,6 +61,7 @@ jobs:
           ORIGINAL_COMMIT: ${{ github.sha }}
           NEW_BRANCH: "update-from-push-${{ github.sha }}"
         run: bash push.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$CLIENT_REPO" "$BRANCH" "$ORIGINAL_COMMIT" "$NEW_BRANCH"
+
 
 # NOTE: for github SCM code push: 
 # sync:
