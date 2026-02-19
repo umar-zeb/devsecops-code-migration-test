@@ -45,7 +45,7 @@ ls -la
 echo ""
 
 # Get the parent commit (the commit before this MR's changes)
-SOURCE_BASE_COMMIT=$(git rev-parse HEAD^)
+SOURCE_BASE_COMMIT=$(git rev-parse origin/main)
 
 if [ -z "$SOURCE_BASE_COMMIT" ]; then
   echo "ERROR: Could not determine parent commit of $GITHUB_SHA."
