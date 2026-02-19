@@ -58,19 +58,11 @@ get_tree_hash() {
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 
-# ── Clone source repo and get the parent commit (before MR changes) ───────────
-# This removes "https://" from the start of SOURCE_REPO and adds credentials
-AUTH_SOURCE_REPO="https://${TARGET_USERNAME}:${CLIENT_PAT}@${SOURCE_REPO#https://}"
-
-echo "==> Cloning source repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$AUTH_SOURCE_REPO" "$WORKDIR/source"
-
-# Fetch the MR commit
-git -C "$WORKDIR/source" fetch --quiet --depth=2 origin "$GITHUB_SHA"
-git -C "$WORKDIR/source" checkout --quiet FETCH_HEAD
+# ── Use current repo (already checked out by GitHub Actions) ─────────────────
+echo "==> Using current repository (already checked out)..."
 
 # Get the parent commit (the commit before this MR's changes)
-SOURCE_BASE_COMMIT=$(git -C "$WORKDIR/source" rev-parse HEAD^)
+SOURCE_BASE_COMMIT=$(git rev-parse HEAD^)
 
 if [ -z "$SOURCE_BASE_COMMIT" ]; then
   echo "ERROR: Could not determine parent commit of $GITHUB_SHA."
@@ -79,7 +71,7 @@ fi
 
 echo "==> Source base commit (before MR): $SOURCE_BASE_COMMIT"
 
-SOURCE_TREE_HASH=$(get_tree_hash "$WORKDIR/source" "$SOURCE_BASE_COMMIT")
+SOURCE_TREE_HASH=$(get_tree_hash "." "$SOURCE_BASE_COMMIT")
 
 if [ -z "$SOURCE_TREE_HASH" ]; then
   echo "ERROR: Could not compute tree hash for source base commit."
@@ -89,8 +81,16 @@ fi
 echo "==> Source codebase hash: $SOURCE_TREE_HASH"
 
 # ── Clone target repo and get latest commit ───────────────────────────────────
-echo "==> Cloning target (client) repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$TARGET_REPO" "$WORKDIR/target"
+# 1. URL-encode the @ in the email to %40 to prevent "Port number" errors
+ENCODED_USER=${TARGET_USERNAME//@/%40}
+
+# 2. Construct the GitLab URL using the token and the TARGET_REPO variable
+# (Using TARGET_REPO here since you mentioned the destination is GitLab)
+AUTH_TARGET_REPO="https://${ENCODED_USER}:${CLIENT_PAT}@${TARGET_REPO#https://}"
+
+echo "==> Cloning target (GitLab) repo..."
+git clone --quiet --no-tags --branch "$BRANCH" "$AUTH_TARGET_REPO" "$WORKDIR/target"
+
 
 # Get the latest commit hash from target repo
 TARGET_LATEST_COMMIT=$(git -C "$WORKDIR/target" rev-parse HEAD)
