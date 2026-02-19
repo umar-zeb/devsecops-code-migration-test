@@ -33,14 +33,14 @@ EXCLUDE_PATHS=(
 )
 
 # ── Credentials ────────────────────────────────────────────────────────────────
-if [ -z "${TARGET_PAT:-}" ]; then
-  echo "ERROR: TARGET_PAT environment variable is not set."
+if [ -z "${CLIENT_PAT:-}" ]; then
+  echo "ERROR: CLIENT_PAT environment variable is not set."
   exit 1
 fi
 
 git config --global credential.helper store
 TARGET_HOST=$(echo "$TARGET_REPO" | awk -F/ '{print $3}')
-echo "https://${TARGET_USERNAME}:${TARGET_PAT}@${TARGET_HOST}" > ~/.git-credentials
+echo "https://${TARGET_USERNAME}:${CLIENT_PAT}@${TARGET_HOST}" > ~/.git-credentials
 chmod 600 ~/.git-credentials
 
 # ── Helper: compute patch-id ──────────────────────────────────────────────────
