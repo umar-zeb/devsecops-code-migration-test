@@ -53,17 +53,20 @@ chmod 600 ~/.git-credentials
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 
-# ── Clone source repo and checkout main branch ────────────────────────────────
+# ── Clone source repo and get main branch commit ─────────────────────────────
 echo "==> Cloning source repo..."
-git clone --branch "$BRANCH" "$SOURCE_REPO" "$WORKDIR/source"
+git clone "$SOURCE_REPO" "$WORKDIR/source"
 cd "$WORKDIR/source"
 
-# Ensure we're on the latest main branch
-git checkout "$BRANCH"
-git pull origin "$BRANCH"
+# Fetch and checkout the latest main branch
+echo "==> Fetching latest main branch..."
+git fetch origin "$BRANCH"
 
-SOURCE_COMMIT=$(git rev-parse HEAD)
-echo "==> Source main branch commit: $SOURCE_COMMIT"
+SOURCE_COMMIT=$(git rev-parse origin/$BRANCH)
+echo "==> Source main branch commit (origin/$BRANCH): $SOURCE_COMMIT"
+
+# Checkout the specific commit from main
+git checkout "$SOURCE_COMMIT"
 
 # ── Remove config files ────────────────────────────────────────────────────────
 echo "==> Removing config files..."
@@ -79,6 +82,9 @@ AUTH_TARGET_REPO="https://${ENCODED_USER}:${CLIENT_PAT}@${TARGET_REPO#https://}"
 echo "==> Cloning target repo..."
 git clone --branch "$BRANCH" "$AUTH_TARGET_REPO" "$WORKDIR/target"
 cd "$WORKDIR/target"
+
+# Set the origin remote to use authenticated URL for push
+git remote set-url origin "$AUTH_TARGET_REPO"
 
 TARGET_COMMIT=$(git rev-parse HEAD)
 echo "==> Target branch commit: $TARGET_COMMIT"
