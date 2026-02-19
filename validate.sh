@@ -1,28 +1,28 @@
 #!/bin/bash
 
-# Usage: validate.sh <original_repo_url> <client_repo_url> <branch>
-# Requires: SOURCE_COMMIT_SHA environment variable
+# Usage: validate.sh <source_repo_url> <target_repo_url> <branch>
+# Requires: GITHUB_SHA environment variable (the MR/PR commit being merged)
 
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
-  echo "Usage: $0 <original_repo_url> <client_repo_url> <branch>"
-  echo "Requires: SOURCE_COMMIT_SHA environment variable"
+  echo "Usage: $0 <source_repo_url> <target_repo_url> <branch>"
+  echo "Requires: GITHUB_SHA environment variable (current PR/MR commit)"
   exit 1
 fi
 
-ORIGINAL_REPO=$1
-CLIENT_REPO=$2
+SOURCE_REPO=$1
+TARGET_REPO=$2
 BRANCH=$3
-CLIENT_USERNAME="${CLIENT_USERNAME:-superdesk_support@superdesk.solutions}"
+TARGET_USERNAME="${TARGET_USERNAME:-superdesk_support@superdesk.solutions}"
 
-# Get source commit from environment
-if [ -z "${SOURCE_COMMIT_SHA:-}" ]; then
-  echo "ERROR: SOURCE_COMMIT_SHA environment variable is not set."
+# Get current MR/PR commit from environment (GitHub Actions sets this automatically)
+if [ -z "${GITHUB_SHA:-}" ]; then
+  echo "ERROR: GITHUB_SHA environment variable is not set."
   exit 1
 fi
 
-# Paths to exclude from patch comparison
+# Paths to exclude from patch comparison (config files only)
 EXCLUDE_PATHS=(
   ":(exclude).github/"
   ":(exclude)CODEOWNERS"
@@ -33,14 +33,14 @@ EXCLUDE_PATHS=(
 )
 
 # ── Credentials ────────────────────────────────────────────────────────────────
-if [ -z "${CLIENT_PAT:-}" ]; then
-  echo "ERROR: CLIENT_PAT environment variable is not set."
+if [ -z "${TARGET_PAT:-}" ]; then
+  echo "ERROR: TARGET_PAT environment variable is not set."
   exit 1
 fi
 
 git config --global credential.helper store
-CLIENT_HOST=$(echo "$CLIENT_REPO" | awk -F/ '{print $3}')
-echo "https://${CLIENT_USERNAME}:${CLIENT_PAT}@${CLIENT_HOST}" > ~/.git-credentials
+TARGET_HOST=$(echo "$TARGET_REPO" | awk -F/ '{print $3}')
+echo "https://${TARGET_USERNAME}:${TARGET_PAT}@${TARGET_HOST}" > ~/.git-credentials
 chmod 600 ~/.git-credentials
 
 # ── Helper: compute patch-id ──────────────────────────────────────────────────
@@ -57,53 +57,73 @@ get_patch_id() {
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 
-# ── Clone original repo and get patch-id of source commit ─────────────────────
-echo "==> Cloning original repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$ORIGINAL_REPO" "$WORKDIR/original"
-git -C "$WORKDIR/original" fetch --quiet --depth=1 origin "$SOURCE_COMMIT_SHA"
-git -C "$WORKDIR/original" checkout --quiet FETCH_HEAD
+# ── Clone source repo and get the parent commit (before MR changes) ───────────
+echo "==> Cloning source repo..."
+git clone --quiet --no-tags --branch "$BRANCH" "$SOURCE_REPO" "$WORKDIR/source"
 
-ORIGINAL_PATCH_ID=$(get_patch_id "$WORKDIR/original" "$SOURCE_COMMIT_SHA")
+# Fetch the MR commit
+git -C "$WORKDIR/source" fetch --quiet --depth=2 origin "$GITHUB_SHA"
+git -C "$WORKDIR/source" checkout --quiet FETCH_HEAD
 
-if [ -z "$ORIGINAL_PATCH_ID" ]; then
-  echo "ERROR: Could not compute patch-id for commit $SOURCE_COMMIT_SHA."
+# Get the parent commit (the commit before this MR's changes)
+SOURCE_BASE_COMMIT=$(git -C "$WORKDIR/source" rev-parse HEAD^)
+
+if [ -z "$SOURCE_BASE_COMMIT" ]; then
+  echo "ERROR: Could not determine parent commit of $GITHUB_SHA."
   exit 1
 fi
 
-echo "==> Source patch-id: $ORIGINAL_PATCH_ID (from $SOURCE_COMMIT_SHA)"
+echo "==> Source base commit (before MR): $SOURCE_BASE_COMMIT"
 
-# ── Clone client repo and get latest commit ───────────────────────────────────
-echo "==> Cloning client repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$CLIENT_REPO" "$WORKDIR/client"
+SOURCE_PATCH_ID=$(get_patch_id "$WORKDIR/source" "$SOURCE_BASE_COMMIT")
 
-# Get the latest commit hash
-LATEST_CLIENT_COMMIT=$(git -C "$WORKDIR/client" rev-parse HEAD)
-echo "==> Latest client commit: $LATEST_CLIENT_COMMIT"
-
-CLIENT_PATCH_ID=$(get_patch_id "$WORKDIR/client" "$LATEST_CLIENT_COMMIT")
-
-if [ -z "$CLIENT_PATCH_ID" ]; then
-  echo "ERROR: Could not compute patch-id for client commit $LATEST_CLIENT_COMMIT."
-  exit 1
+if [ -z "$SOURCE_PATCH_ID" ]; then
+  echo "WARNING: Source base commit has no code changes (after excluding config files)."
+  SOURCE_PATCH_ID="empty"
 fi
 
-echo "==> Client patch-id: $CLIENT_PATCH_ID"
+echo "==> Source patch-id: $SOURCE_PATCH_ID"
 
-# ── Compare ────────────────────────────────────────────────────────────────────
-if [ "$CLIENT_PATCH_ID" = "$ORIGINAL_PATCH_ID" ]; then
+# ── Clone target repo and get latest commit ───────────────────────────────────
+echo "==> Cloning target (client) repo..."
+git clone --quiet --no-tags --branch "$BRANCH" "$TARGET_REPO" "$WORKDIR/target"
+
+# Get the latest commit hash from target repo
+TARGET_LATEST_COMMIT=$(git -C "$WORKDIR/target" rev-parse HEAD)
+echo "==> Target latest commit: $TARGET_LATEST_COMMIT"
+
+TARGET_PATCH_ID=$(get_patch_id "$WORKDIR/target" "$TARGET_LATEST_COMMIT")
+
+if [ -z "$TARGET_PATCH_ID" ]; then
+  echo "WARNING: Target commit has no code changes (after excluding config files)."
+  TARGET_PATCH_ID="empty"
+fi
+
+echo "==> Target patch-id: $TARGET_PATCH_ID"
+
+# ── Compare patch-ids ──────────────────────────────────────────────────────────
+if [ "$TARGET_PATCH_ID" = "$SOURCE_PATCH_ID" ]; then
   echo ""
-  echo "✅ Validation PASSED."
-  echo "   Source commit : $SOURCE_COMMIT_SHA"
-  echo "   Client commit : $LATEST_CLIENT_COMMIT"
-  echo "   Patch-id      : $ORIGINAL_PATCH_ID"
+  echo "✅ Validation PASSED - Repos are in sync."
+  echo "   Source base commit : $SOURCE_BASE_COMMIT"
+  echo "   Target latest commit: $TARGET_LATEST_COMMIT"
+  echo "   Matching patch-id   : $SOURCE_PATCH_ID"
+  echo ""
+  echo "   ➜ Safe to merge changes to main."
   exit 0
 else
   echo ""
-  echo "❌ Validation FAILED — patch-ids do not match."
-  echo "   Source commit : $SOURCE_COMMIT_SHA (patch-id: $ORIGINAL_PATCH_ID)"
-  echo "   Client commit : $LATEST_CLIENT_COMMIT (patch-id: $CLIENT_PATCH_ID)"
+  echo "❌ Validation FAILED - Target repo has diverged from source!"
+  echo "   Source base commit  : $SOURCE_BASE_COMMIT (patch-id: $SOURCE_PATCH_ID)"
+  echo "   Target latest commit: $TARGET_LATEST_COMMIT (patch-id: $TARGET_PATCH_ID)"
   echo ""
-  echo "==> Source change (code only, configs excluded):"
-  git -C "$WORKDIR/original" diff-tree -p --stat "$SOURCE_COMMIT_SHA" -- . "${EXCLUDE_PATHS[@]}"
+  echo "   ⚠️  The target (client) repo has changes that don't match the source repo."
+  echo "   ⚠️  This MR cannot be merged until repos are synchronized."
+  echo ""
+  echo "==> Differences in source base commit (excluding configs):"
+  git -C "$WORKDIR/source" diff-tree -p --stat "$SOURCE_BASE_COMMIT" -- . "${EXCLUDE_PATHS[@]}" || true
+  echo ""
+  echo "==> Differences in target latest commit (excluding configs):"
+  git -C "$WORKDIR/target" diff-tree -p --stat "$TARGET_LATEST_COMMIT" -- . "${EXCLUDE_PATHS[@]}" || true
   exit 1
 fi
