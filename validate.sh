@@ -43,14 +43,15 @@ TARGET_HOST=$(echo "$TARGET_REPO" | awk -F/ '{print $3}')
 echo "https://${TARGET_USERNAME}:${CLIENT_PAT}@${TARGET_HOST}" > ~/.git-credentials
 chmod 600 ~/.git-credentials
 
-# ── Helper: compute patch-id ──────────────────────────────────────────────────
-get_patch_id() {
+# ── Helper: compute hash of entire codebase at a commit ──────────────────────
+get_tree_hash() {
   local repo_dir=$1
   local commit=$2
 
-  git -C "$repo_dir" diff-tree -p "$commit" -- . "${EXCLUDE_PATHS[@]}" \
-    | git patch-id --stable \
-    | awk '{print $1}'
+  # Generate a diff of the entire tree against empty tree (shows all files)
+  # Then hash it to get a stable identifier for the codebase state
+  git -C "$repo_dir" diff-tree -p "$commit" 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -- . "${EXCLUDE_PATHS[@]}" \
+    | git hash-object --stdin
 }
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
@@ -75,14 +76,14 @@ fi
 
 echo "==> Source base commit (before MR): $SOURCE_BASE_COMMIT"
 
-SOURCE_PATCH_ID=$(get_patch_id "$WORKDIR/source" "$SOURCE_BASE_COMMIT")
+SOURCE_TREE_HASH=$(get_tree_hash "$WORKDIR/source" "$SOURCE_BASE_COMMIT")
 
-if [ -z "$SOURCE_PATCH_ID" ]; then
-  echo "WARNING: Source base commit has no code changes (after excluding config files)."
-  SOURCE_PATCH_ID="empty"
+if [ -z "$SOURCE_TREE_HASH" ]; then
+  echo "ERROR: Could not compute tree hash for source base commit."
+  exit 1
 fi
 
-echo "==> Source patch-id: $SOURCE_PATCH_ID"
+echo "==> Source codebase hash: $SOURCE_TREE_HASH"
 
 # ── Clone target repo and get latest commit ───────────────────────────────────
 echo "==> Cloning target (client) repo..."
@@ -92,38 +93,40 @@ git clone --quiet --no-tags --branch "$BRANCH" "$TARGET_REPO" "$WORKDIR/target"
 TARGET_LATEST_COMMIT=$(git -C "$WORKDIR/target" rev-parse HEAD)
 echo "==> Target latest commit: $TARGET_LATEST_COMMIT"
 
-TARGET_PATCH_ID=$(get_patch_id "$WORKDIR/target" "$TARGET_LATEST_COMMIT")
+TARGET_TREE_HASH=$(get_tree_hash "$WORKDIR/target" "$TARGET_LATEST_COMMIT")
 
-if [ -z "$TARGET_PATCH_ID" ]; then
-  echo "WARNING: Target commit has no code changes (after excluding config files)."
-  TARGET_PATCH_ID="empty"
+if [ -z "$TARGET_TREE_HASH" ]; then
+  echo "ERROR: Could not compute tree hash for target commit."
+  exit 1
 fi
 
-echo "==> Target patch-id: $TARGET_PATCH_ID"
+echo "==> Target codebase hash: $TARGET_TREE_HASH"
 
-# ── Compare patch-ids ──────────────────────────────────────────────────────────
-if [ "$TARGET_PATCH_ID" = "$SOURCE_PATCH_ID" ]; then
+# ── Compare codebase hashes ───────────────────────────────────────────────────
+if [ "$TARGET_TREE_HASH" = "$SOURCE_TREE_HASH" ]; then
   echo ""
-  echo "✅ Validation PASSED - Repos are in sync."
+  echo "✅ Validation PASSED - Entire codebases are identical."
   echo "   Source base commit : $SOURCE_BASE_COMMIT"
   echo "   Target latest commit: $TARGET_LATEST_COMMIT"
-  echo "   Matching patch-id   : $SOURCE_PATCH_ID"
+  echo "   Matching tree hash  : $SOURCE_TREE_HASH"
   echo ""
   echo "   ➜ Safe to merge changes to main."
   exit 0
 else
   echo ""
-  echo "❌ Validation FAILED - Target repo has diverged from source!"
-  echo "   Source base commit  : $SOURCE_BASE_COMMIT (patch-id: $SOURCE_PATCH_ID)"
-  echo "   Target latest commit: $TARGET_LATEST_COMMIT (patch-id: $TARGET_PATCH_ID)"
+  echo "❌ Validation FAILED - Codebases do not match!"
+  echo "   Source base commit  : $SOURCE_BASE_COMMIT (hash: $SOURCE_TREE_HASH)"
+  echo "   Target latest commit: $TARGET_LATEST_COMMIT (hash: $TARGET_TREE_HASH)"
   echo ""
-  echo "   ⚠️  The target (client) repo has changes that don't match the source repo."
+  echo "   ⚠️  The target (client) repo codebase differs from source repo."
   echo "   ⚠️  This MR cannot be merged until repos are synchronized."
   echo ""
-  echo "==> Differences in source base commit (excluding configs):"
-  git -C "$WORKDIR/source" diff-tree -p --stat "$SOURCE_BASE_COMMIT" -- . "${EXCLUDE_PATHS[@]}" || true
+  echo "==> Source codebase state (excluding configs):"
+  git -C "$WORKDIR/source" ls-tree -r --name-only "$SOURCE_BASE_COMMIT" | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' | head -20
+  echo "   ... (showing first 20 files)"
   echo ""
-  echo "==> Differences in target latest commit (excluding configs):"
-  git -C "$WORKDIR/target" diff-tree -p --stat "$TARGET_LATEST_COMMIT" -- . "${EXCLUDE_PATHS[@]}" || true
+  echo "==> Target codebase state (excluding configs):"
+  git -C "$WORKDIR/target" ls-tree -r --name-only "$TARGET_LATEST_COMMIT" | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' | head -20
+  echo "   ... (showing first 20 files)"
   exit 1
 fi
