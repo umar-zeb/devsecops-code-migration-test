@@ -1,55 +1,141 @@
 #!/bin/bash
 
-# Usage: push.sh <original_repo_url> <client_repo_url> <branch> <original_commit> <new_branch>
+# Usage: push.sh <source_repo_url> <target_repo_url> <branch>
+# Requires: GITHUB_SHA environment variable
+# Creates a feature branch in target repo with clean code (no configs) from source main branch
 
-if [ $# -lt 5 ]; then
-  echo "Usage: $0 <original_repo_url> <client_repo_url> <branch> <original_commit> <new_branch>"
+set -euo pipefail
+
+if [ $# -lt 3 ]; then
+  echo "Usage: $0 <source_repo_url> <target_repo_url> <branch>"
+  echo "Requires: GITHUB_SHA environment variable"
   exit 1
 fi
 
-ORIGINAL_REPO=$1
-CLIENT_REPO=$2  # e.g., https://gitlab.com/group/project.git (no auth in URL)
+SOURCE_REPO=$1
+TARGET_REPO=$2
 BRANCH=$3
-ORIGINAL_COMMIT=$4
-NEW_BRANCH=$5
+TARGET_USERNAME="${TARGET_USERNAME:-superdesk_support@superdesk.solutions}"
 
-# Set up global credential helper (use 'store' for persistent; 'cache' for temp with --timeout=3600)
+# Get commit SHA from environment
+if [ -z "${GITHUB_SHA:-}" ]; then
+  echo "ERROR: GITHUB_SHA environment variable is not set."
+  exit 1
+fi
+
+# Get short commit ID for branch name
+SHORT_COMMIT=$(echo "$GITHUB_SHA" | cut -c1-7)
+FEATURE_BRANCH="sync-${SHORT_COMMIT}"
+
+echo "==> Starting push process..."
+echo "    Source repo: $SOURCE_REPO"
+echo "    Target repo: $TARGET_REPO"
+echo "    Base branch: $BRANCH"
+echo "    Feature branch: $FEATURE_BRANCH"
+echo ""
+
+# ── Credentials ────────────────────────────────────────────────────────────────
+if [ -z "${CLIENT_PAT:-}" ]; then
+  echo "ERROR: CLIENT_PAT environment variable is not set."
+  exit 1
+fi
+
 git config --global credential.helper store
+git config --global user.email "${GIT_USER_EMAIL:-ci@superdesk.solutions}"
+git config --global user.name "${GIT_USER_NAME:-CI Bot}"
 
-# Provide credentials once (username/email and PAT/password); Git will store them in ~/.git-credentials
-# Format: https://username:password@host
-# For GitLab PAT: username can be 'oauth2' or your email, password is PAT
-echo "https://${CLIENT_USERNAME}:${CLIENT_PAT}@${CLIENT_REPO#https://}" > ~/.git-credentials  # CLIENT_USERNAME from env (e.g., your email or 'oauth2')
+TARGET_HOST=$(echo "$TARGET_REPO" | awk -F/ '{print $3}')
+ENCODED_USER=${TARGET_USERNAME//@/%40}
+echo "https://${ENCODED_USER}:${CLIENT_PAT}@${TARGET_HOST}" > ~/.git-credentials
+chmod 600 ~/.git-credentials
 
-# Now Git will use these for any operations on $CLIENT_REPO
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
 
-# Clone original
-git clone $ORIGINAL_REPO original-temp
-cd original-temp
-git fetch origin
+# ── Clone source repo and checkout main branch ────────────────────────────────
+echo "==> Cloning source repo..."
+git clone --branch "$BRANCH" "$SOURCE_REPO" "$WORKDIR/source"
+cd "$WORKDIR/source"
 
-# Switch to the commit
-git checkout $ORIGINAL_COMMIT
+# Ensure we're on the latest main branch
+git checkout "$BRANCH"
+git pull origin "$BRANCH"
 
-# Remove configs using git filter-repo (rewrites history to remove them)
-git filter-repo --invert-paths --path-glob '.github/*' --path CODEOWNERS --path .gitattributes --force
+SOURCE_COMMIT=$(git rev-parse HEAD)
+echo "==> Source main branch commit: $SOURCE_COMMIT"
 
-# Add client remote (plain URL, no embedded auth—helper handles it)
-git remote add client $CLIENT_REPO
-git fetch client
+# ── Remove config files ────────────────────────────────────────────────────────
+echo "==> Removing config files..."
+rm -rf .github CODEOWNERS .gitattributes .gitignore validate.sh push.sh 2>/dev/null || true
 
-# Create new branch from client's current branch
-git checkout -b $NEW_BRANCH client/$BRANCH
+echo "==> Files after config removal:"
+find . -type f -not -path './.git/*' | head -20
+echo "..."
 
-# Cherry-pick the commit, but discard any config changes (since filtered, should be clean)
-git cherry-pick --no-commit $ORIGINAL_COMMIT
-git checkout HEAD -- .github/ CODEOWNERS .gitattributes  # Safety revert if any slipped through
-git commit -m "Pushed code changes from original commit: $ORIGINAL_COMMIT (configs removed)"
+# ── Clone target repo ──────────────────────────────────────────────────────────
+AUTH_TARGET_REPO="https://${ENCODED_USER}:${CLIENT_PAT}@${TARGET_REPO#https://}"
 
-# Push the new branch (auth handled by helper)
-git push client $NEW_BRANCH
+echo "==> Cloning target repo..."
+git clone --branch "$BRANCH" "$AUTH_TARGET_REPO" "$WORKDIR/target"
+cd "$WORKDIR/target"
 
-cd ..
-rm -rf original-temp
+TARGET_COMMIT=$(git rev-parse HEAD)
+echo "==> Target branch commit: $TARGET_COMMIT"
 
-echo "Push complete: New branch pushed."
+# ── Create feature branch ──────────────────────────────────────────────────────
+echo "==> Creating feature branch: $FEATURE_BRANCH"
+git checkout -b "$FEATURE_BRANCH"
+
+# ── Copy clean code from source to target ──────────────────────────────────────
+echo "==> Copying clean code from source to target..."
+
+# Remove all files except .git directory
+find . -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
+
+# Copy all files from source (which has configs already removed)
+cp -r "$WORKDIR/source/." . 2>/dev/null || true
+
+# Remove .git from copied files (we don't want source's git history)
+rm -rf .git.bak 2>/dev/null || true
+
+# Restore target's .git
+# (it's already there, we just cleaned everything else)
+
+echo "==> Files in feature branch:"
+find . -type f -not -path './.git/*' | head -20
+echo "..."
+
+# ── Stage all changes ──────────────────────────────────────────────────────────
+git add -A
+
+# Check if there are changes to commit
+if git diff --cached --quiet; then
+  echo ""
+  echo "⚠️  No changes to push - codebase already in sync"
+  exit 0
+fi
+
+# ── Commit and push ────────────────────────────────────────────────────────────
+echo "==> Committing changes..."
+COMMIT_MSG="Sync code from source (commit: $SHORT_COMMIT)
+
+Source commit: $SOURCE_COMMIT
+Configs removed: .github/, CODEOWNERS, .gitattributes, .gitignore, validate.sh, push.sh
+Auto-generated by CI/CD pipeline"
+
+git commit -m "$COMMIT_MSG"
+
+echo "==> Pushing feature branch to target repo..."
+git push origin "$FEATURE_BRANCH"
+
+echo ""
+echo "✅ Push complete!"
+echo "   Feature branch created: $FEATURE_BRANCH"
+echo "   Source commit: $SOURCE_COMMIT"
+echo "   Target repo: $TARGET_REPO"
+echo ""
+echo "   Next steps:"
+echo "   1. Review the changes in the feature branch"
+echo "   2. Create a merge request in the target repo"
+echo "   3. Merge $FEATURE_BRANCH -> $BRANCH"
