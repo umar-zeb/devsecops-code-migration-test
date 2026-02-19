@@ -59,8 +59,11 @@ WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ── Clone source repo and get the parent commit (before MR changes) ───────────
+# This removes "https://" from the start of SOURCE_REPO and adds credentials
+AUTH_SOURCE_REPO="https://${TARGET_USERNAME}:${CLIENT_PAT}@${SOURCE_REPO#https://}"
+
 echo "==> Cloning source repo..."
-git clone --quiet --no-tags --branch "$BRANCH" "$SOURCE_REPO" "$WORKDIR/source"
+git clone --quiet --no-tags --branch "$BRANCH" "$AUTH_SOURCE_REPO" "$WORKDIR/source"
 
 # Fetch the MR commit
 git -C "$WORKDIR/source" fetch --quiet --depth=2 origin "$GITHUB_SHA"
