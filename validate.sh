@@ -187,6 +187,6 @@ echo "   Files validated    : $(wc -l < "$WORKDIR/source_list.txt")"
 echo ""
 echo "   ➜ Safe to merge changes to main."
 echo ""
-echo "==> AFTER VALIDATION - Directory listing:"
-ls -la
+# echo "==> AFTER VALIDATION - Directory listing:"
+# ls -la
 exit 0
