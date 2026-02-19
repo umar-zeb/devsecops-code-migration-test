@@ -55,8 +55,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 # ── Clone source repo and get main branch commit ─────────────────────────────
 echo "==> Cloning source repo..."
-git clone "$SOURCE_REPO" "$WORKDIR/source"
-cd "$WORKDIR/source"
+git clone "$SOURCE_REPO" "$WORKDIR/source_repo"
+cd "$WORKDIR/source_repo"
 
 # Fetch and checkout the latest main branch
 echo "==> Fetching latest main branch..."
@@ -68,12 +68,23 @@ echo "==> Source main branch commit (origin/$BRANCH): $SOURCE_COMMIT"
 # Checkout the specific commit from main
 git checkout "$SOURCE_COMMIT"
 
-# ── Remove config files ────────────────────────────────────────────────────────
-echo "==> Removing config files..."
-rm -rf .github CODEOWNERS .gitattributes .gitignore validate.sh push.sh 2>/dev/null || true
+# ── Export clean files (no .git, no configs) ───────────────────────────────────
+echo "==> Exporting clean files from source (no .git, no configs)..."
+mkdir -p "$WORKDIR/source_clean"
 
-echo "==> Files after config removal:"
-find . -type f -not -path './.git/*' | head -20
+# Copy all files EXCEPT .git and config files
+rsync -av \
+  --exclude='.git' \
+  --exclude='.github' \
+  --exclude='CODEOWNERS' \
+  --exclude='.gitattributes' \
+  --exclude='.gitignore' \
+  --exclude='validate.sh' \
+  --exclude='push.sh' \
+  "$WORKDIR/source_repo/" "$WORKDIR/source_clean/"
+
+echo "==> Clean files exported:"
+find "$WORKDIR/source_clean" -type f | head -20
 echo "..."
 
 # ── Clone target repo ──────────────────────────────────────────────────────────
@@ -105,19 +116,19 @@ git checkout -b "$FEATURE_BRANCH"
 # ── Copy clean code from source to target ──────────────────────────────────────
 echo "==> Copying clean code from source to target..."
 
-# Remove all files except .git directory
+# Remove all files except .git directory (keep target's git history)
 find . -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
 
-# Copy all files from source (which has configs already removed)
-cp -r "$WORKDIR/source/." . 2>/dev/null || true
+# Copy clean files from source (which has NO .git, NO configs)
+cp -r "$WORKDIR/source_clean/." . 
 
-# Remove .git from copied files (we don't want source's git history)
-rm -rf .git.bak 2>/dev/null || true
+# Verify no .git was copied
+if [ -d ".git.bak" ] || [ -f ".git" ]; then
+  echo "ERROR: .git was somehow copied from source!"
+  exit 1
+fi
 
-# Restore target's .git
-# (it's already there, we just cleaned everything else)
-
-echo "==> Files in feature branch:"
+echo "==> Files in feature branch (after copy):"
 find . -type f -not -path './.git/*' | head -20
 echo "..."
 
