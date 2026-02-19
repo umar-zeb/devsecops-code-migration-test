@@ -61,6 +61,10 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # ── Use current repo (already checked out by GitHub Actions) ─────────────────
 echo "==> Using current repository (already checked out)..."
 
+# List files to verify git configs are present
+echo "==> Listing current directory contents..."
+ls -la
+
 # Get the parent commit (the commit before this MR's changes)
 SOURCE_BASE_COMMIT=$(git rev-parse HEAD^)
 
@@ -70,6 +74,13 @@ if [ -z "$SOURCE_BASE_COMMIT" ]; then
 fi
 
 echo "==> Source base commit (before MR): $SOURCE_BASE_COMMIT"
+
+# Show files that will be validated (excluding configs)
+echo "==> Files to be validated from source (excluding configs):"
+git ls-tree -r --name-only "$SOURCE_BASE_COMMIT" \
+  | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' \
+  | tee "$WORKDIR/source_files.txt"
+echo "==> Total files to validate from source: $(wc -l < "$WORKDIR/source_files.txt")"
 
 SOURCE_TREE_HASH=$(get_tree_hash "." "$SOURCE_BASE_COMMIT")
 
@@ -96,6 +107,13 @@ git clone --quiet --no-tags --branch "$BRANCH" "$AUTH_TARGET_REPO" "$WORKDIR/tar
 TARGET_LATEST_COMMIT=$(git -C "$WORKDIR/target" rev-parse HEAD)
 echo "==> Target latest commit: $TARGET_LATEST_COMMIT"
 
+# Show files that will be validated from target (excluding configs)
+echo "==> Files to be validated from target (excluding configs):"
+git -C "$WORKDIR/target" ls-tree -r --name-only "$TARGET_LATEST_COMMIT" \
+  | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' \
+  | tee "$WORKDIR/target_files.txt"
+echo "==> Total files to validate from target: $(wc -l < "$WORKDIR/target_files.txt")"
+
 TARGET_TREE_HASH=$(get_tree_hash "$WORKDIR/target" "$TARGET_LATEST_COMMIT")
 
 if [ -z "$TARGET_TREE_HASH" ]; then
@@ -112,6 +130,7 @@ if [ "$TARGET_TREE_HASH" = "$SOURCE_TREE_HASH" ]; then
   echo "   Source base commit : $SOURCE_BASE_COMMIT"
   echo "   Target latest commit: $TARGET_LATEST_COMMIT"
   echo "   Matching tree hash  : $SOURCE_TREE_HASH"
+  echo "   Files validated    : $(wc -l < "$WORKDIR/source_files.txt")"
   echo ""
   echo "   ➜ Safe to merge changes to main."
   exit 0
@@ -124,12 +143,10 @@ else
   echo "   ⚠️  The target (client) repo codebase differs from source repo."
   echo "   ⚠️  This MR cannot be merged until repos are synchronized."
   echo ""
-  echo "==> Source codebase state (excluding configs):"
-  git -C "$WORKDIR/source" ls-tree -r --name-only "$SOURCE_BASE_COMMIT" | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' | head -20
-  echo "   ... (showing first 20 files)"
+  echo "==> Files validated from source (first 20):"
+  head -20 "$WORKDIR/source_files.txt"
   echo ""
-  echo "==> Target codebase state (excluding configs):"
-  git -C "$WORKDIR/target" ls-tree -r --name-only "$TARGET_LATEST_COMMIT" | grep -v -E '^\.github/|^CODEOWNERS$|^\.gitattributes$|^\.gitignore$|^validate\.sh$|^push\.sh$' | head -20
-  echo "   ... (showing first 20 files)"
+  echo "==> Files validated from target (first 20):"
+  head -20 "$WORKDIR/target_files.txt"
   exit 1
 fi
